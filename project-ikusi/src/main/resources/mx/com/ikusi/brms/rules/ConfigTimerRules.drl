@@ -1,0 +1,51 @@
+package mx.com.ikusi.brms.rules;
+
+import mx.com.ikusi.brms.utils.Constants;
+import mx.com.ikusi.brms.ws.*;
+
+rule "prueba acciones inmediatas"
+no-loop 
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_SAVED || statusBRMS == "DOUBLE_EVENT")
+then
+    System.out.println("cambia el estatus para enviar a wait...");
+    $dispositivo.setStatusBRMS(Constants.STAT_TO_TIMER);
+    $dispositivo.getJerarquia().setStatus("TO_EVAL");
+    update($dispositivo);
+    update($dispositivo.getJerarquia());
+end
+
+
+
+rule "CALL INTERVAL TIME"
+salience 2
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_TO_TIMER)  
+    not( Request( statusBRMS == Constants.STAT_RESOLVED, this after[0s,5m] $dispositivo ) )  
+then
+
+  for(Incident incidente:$dispositivo.getJerarquia().getIncidents()){
+        if($dispositivo.getDevice().getSysId().equals(incidente.getRequest().getDevice().getSysId()) && !incidente.getStatus().equals("SOLVED")){
+            System.out.println("Se levanta incidente: "+incidente+ " para device: "+incidente.getRequest().getDevice().getName());
+            for(Request resquestAsociado: incidente.getRequestAsociated()){
+                $dispositivo.getResponse().appendDescripcion( resquestAsociado.getResponse().getDescripcion() );
+                resquestAsociado.setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+                System.out.println("el dispositivo:"+resquestAsociado.getDevice().getName()+" fue asociado al incidente ");
+                update(resquestAsociado);
+            }
+            
+            //actulizar el request
+            System.out.println("informacion enviada---->>>"+$dispositivo.getResponse().getDescripcion());
+            RestFuse.sendToFuse($dispositivo);
+                                       
+            $dispositivo.setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+            incidente.setStatus("SOLVED");
+            update($dispositivo);
+            update($dispositivo.getJerarquia());
+        }
+  }
+  
+  
+  $dispositivo.setStatusBRMS(Constants.STAT_ACTIVATE);
+  update($dispositivo);
+end

@@ -1,0 +1,628 @@
+package mx.com.ikusi.brms.rules;
+
+import mx.com.ikusi.brms.ws.RestFuse;
+
+
+
+// Rule gamesa 1
+// Esta regla verifica si en memoria existe un evento POWER FAIL de una SAI  , 
+// de ser asi se raliza una llamada al FUSE para el envio de un correo 
+rule "POWER_FAIL SEND EMAIL" 
+salience 3
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_SAVED || statusBRMS == Constants.STAT_DOUBLE_EVENT,
+                     device.name.contains(Constants.DISP_SAI), 
+                     event.name == Constants.EVENT_POWER_FAIL)
+then
+    $dispositivo.setStatusBRMS( Constants.STAT_MAIL );
+	$dispositivo.getResponse().setResultado( Constants.STAT_MAIL );
+	$dispositivo.getResponse().setDescripcion("Se ha presentado " + $dispositivo.getEvent().getName() + " en el dispositivo " + $dispositivo.getDevice().getName() + ", favor de considerar realizar acciones necesarias");
+    RestFuse.sendToFuse($dispositivo);
+    $dispositivo.setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+    update($dispositivo);
+end
+
+// Rule gamesa 2
+// Esta regla verifica si en memoria existe un evento POWER FAIL previo de una SAI y un evento NODE DOWN, 
+// de ser asi se raliza una llamada al FUSE para que se levante un incident 
+rule "POWER_FAIL-NODE DOWN"
+salience 3
+no-loop 
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_SAVED || statusBRMS == Constants.STAT_DOUBLE_EVENT,
+                     device.name.contains(Constants.DISP_SAI), 
+                     event.name == Constants.EVENT_POWER_FAIL+"+"+Constants.EVENT_NODE_DOWN)
+then
+    $dispositivo.setStatusBRMS( Constants.STAT_CREATE );
+	$dispositivo.getResponse().setResultado( Constants.STAT_CREATE );
+	$dispositivo.getResponse().setSeveridad( Constants.SEVERITY_2 );
+	RestFuse.sendToFuse($dispositivo);
+	$dispositivo.getJerarquia().getIncidents().clear();
+	Incident incidente= new Incident($dispositivo);
+    incidente.setName("POWER_FAIL");
+    incidente.addRequestAsociado($dispositivo);
+    $dispositivo.getJerarquia().addIncident(incidente); 
+    $dispositivo.setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+    update($dispositivo);
+end
+
+rule "POWER_FAIL+POWER RESTORE"
+salience 3
+no-loop 
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_SAVED || statusBRMS == Constants.STAT_DOUBLE_EVENT,
+                     device.name.contains(Constants.DISP_SAI),
+                     event.name ==  Constants.EVENT_POWER_FAIL+"+"+Constants.EVENT_POWER_RESTORED)
+then
+    System.out.println("Se marca evento  resuelto SAI con PF+ PR");
+    $dispositivo.setStatusBRMS(Constants.STAT_RESOLVED);
+    retract($dispositivo);
+    
+end
+
+
+rule "VALIDATE POWER_FAIL+NODE DOWN"
+salience 3
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_SAVED || statusBRMS == Constants.STAT_DOUBLE_EVENT,jerarquia != null,$listaNodos:jerarquia.nodos)
+    $nodo : Nodo(request != null,request.device.name.contains(Constants.DISP_SAI),request.event.name== Constants.EVENT_POWER_FAIL+"+"+Constants.EVENT_NODE_DOWN) from $listaNodos
+then 
+    System.out.println("El dispotivo: "+$dispositivo.getDevice().getName() +" actuliza incident: "+$nodo.getRequest().getSysId());
+    $nodo.getRequest().getResponse().appendDescripcion( $dispositivo.getResponse().getDescripcion() );
+    $nodo.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    $nodo.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    $nodo.getRequest().getResponse().setSeveridad( "0" );
+    RestFuse.sendToFuse($nodo.getRequest());	
+    $dispositivo.setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+    
+    update($dispositivo);
+end
+
+rule "VALIDATE POWER_FAIL+NODE DOWN+NODE UP"
+salience 3
+when 
+    $dispositivo : Request(statusBRMS == Constants.STAT_SAVED || statusBRMS == Constants.STAT_DOUBLE_EVENT ,!device.name.contains(Constants.DISP_SAI),event.name== Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP,jerarquia != null,$listaNodos:jerarquia.nodos)
+    $nodo : Nodo(request != null,request.device.name.contains(Constants.DISP_SAI),
+            request.event.name.contains(Constants.EVENT_NODE_DOWN)
+            ) from $listaNodos
+then 
+    System.out.println("El dispotivo: "+$dispositivo.getDevice().getName() +" se quita del incident: "+$nodo.getRequest().getSysId());
+    $dispositivo.setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+    $dispositivo.setStatusBRMS("CLOSED");
+    update($dispositivo);
+end
+
+
+
+
+
+
+
+
+//*****************************************************************************
+//************************RULES jerarquia**************************************
+//*****************************************************************************
+
+rule "Regla corte de eneriga"
+salience 3
+when
+    jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    requestSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name ==Constants.EVENT_POWER_FAIL+"+"+Constants.EVENT_NODE_DOWN 
+                     ) from   $listaHijos 
+    nodoAfectado1: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos or
+    nodoAfectado2: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name ==  Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos or
+    nodoAfectado3: Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos or
+    nodoAfectado4: Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos or
+    nodoAfectado5: Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU),request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos
+then
+    for(Object obj: $listaHijos){
+        if(obj != null){
+          Nodo nod=(Nodo)obj;
+        if( nod != null && nod.getRequest()!=null &&  !nod.getEventName().equals("DUMMY")
+        && !nod.getRequest().getDevice().getName().contains(Constants.DISP_SAI) && !nod.getRequest().getStatusBRMS().contains(Constants.STAT_TO_WAIT_FOR_EVENT)
+        ){
+              requestSAI.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+	    	  requestSAI.getRequest().getResponse().setSeveridad( "0" );
+	    	  requestSAI.getRequest().setSysId(requestSAI.getRequest().getSysId());
+	    	  String newDescription=requestSAI.getRequest().getResponse().getDescripcion()+" .l. "+nod.getRequest().getDevice().getName();
+	    	  requestSAI.getRequest().getResponse().appendDescripcion(nod.getRequest().getResponse().getDescripcion()+" ** ");
+	    	  RestFuse.sendToFuse(requestSAI.getRequest());
+              nod.getRequest().setStatusBRMS(Constants.STAT_TO_WAIT_FOR_EVENT);
+            
+           System.out.println("se agrega al incidente:"+requestSAI.getRequest().getSysId());
+           update(nod.getRequest());
+            }
+        }
+    }
+    update(requestSAI.getRequest());
+end
+
+
+
+
+rule "Regla corte de eneriga UP"
+salience 3
+when
+    jerarquia: Jerarquia($listaHijos:nodos )
+    requestSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI), request.statusBRMS != "CLOSED", 
+                    request.event.name == Constants.EVENT_POWER_FAIL+"+"+Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP
+                    || request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP
+                     ) from   $listaHijos
+then
+    System.out.println("regla de prueba...PF + ND + extra");
+    
+    for(Object obj: $listaHijos){
+        Nodo nod=(Nodo)obj;
+        if(nod.getRequest()!=null && !nod.getRequest().getDevice().getName().contains(Constants.DISP_SAI)){
+           System.out.println("se elminna v1.2:"+nod.getRequest());
+        }
+    }
+    
+        System.out.println("CALL PF+ND: "+requestSAI.getRequest().getSysId());
+        requestSAI.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+        requestSAI.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+        requestSAI.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+        RestFuse.sendToFuse(requestSAI.getRequest());	
+        requestSAI.getRequest().setStatusBRMS("CLOSED");
+        update(requestSAI.getRequest());
+        //retract(requestSAI.getRequest());
+        //retract(jerarquia);
+end
+
+
+
+
+
+rule "Regla SAI DOWN"
+no-loop
+salience 3
+when
+    jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    requestSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT
+                     ) from   $listaHijos 
+    nodoAfectado1: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos or
+    nodoAfectado2: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos or
+    nodoAfectado3: Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos or
+    nodoAfectado4: Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos or
+    nodoAfectado5: Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU),request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos
+then
+    System.out.println("regla de prueba...just ND ");
+    
+    System.out.println("Se levanta incidente por pf+nd  dffwef  zf");
+    requestSAI.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	requestSAI.getRequest().getResponse().setSeveridad( Constants.SEVERITY_2 );
+	
+	Incident incidente= new Incident(requestSAI.getRequest());
+    incidente.setName("SAI NODE DOWN");
+    
+    
+    
+    for(Object obj: $listaHijos){
+        if(obj != null){
+          Nodo nod=(Nodo)obj;
+        if( nod != null && nod.getRequest()!=null &&  !nod.getEventName().equals("DUMMY")
+        && !nod.getRequest().getDevice().getName().contains(Constants.DISP_SAI) && !nod.getRequest().getStatusBRMS().contains(Constants.STAT_TO_WAIT_FOR_EVENT)
+        ){
+            incidente.addRequestAsociado(nod.getRequest());
+            System.out.println("se agrega al incidente:"+requestSAI.getRequest().getSysId());
+            }
+        }
+    }
+   
+   requestSAI.getRequest().getJerarquia().addIncident(incidente); 
+   requestSAI.getRequest().getJerarquia().setStatus("TO_WAIT");
+   update(requestSAI.getRequest().getJerarquia());
+end
+
+
+
+
+
+
+
+
+
+
+//LP DOWN
+rule "LP DOWN"
+no-loop
+salience 3
+when 
+jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoRP: Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos 
+    nodoSO: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos 
+then
+    System.out.println("CALL LP DOWN");
+    nodoRP.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	nodoRP.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	Incident incidente= new Incident(nodoRP.getRequest());
+    incidente.setName("LP down");
+    incidente.addRequestAsociado(nodoSO.getRequest());
+    jerarquia.addIncident(incidente);
+	update(jerarquia);
+end
+
+//LP DOWN
+rule "LP UP"
+salience 3
+no-loop
+when 
+    $jerarquia: Jerarquia($listaHijos:nodos, status==Constants.STAT_TO_EVAL )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    $nodoRP: Nodo(request!= null,request.device.name.contains(Constants.DISP_RP),request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    $nodoSO: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO),request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+then
+    
+    $nodoRP.getRequest().getResponse().appendDescripcion( $nodoSO.getRequest().getResponse().getDescripcion() );
+    $nodoRP.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    $nodoRP.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    $nodoRP.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+    RestFuse.sendToFuse($nodoRP.getRequest());	
+    retract($nodoRP.getRequest());
+    retract($nodoSO.getRequest());  
+    retract($jerarquia);
+    
+end
+
+
+
+rule "ls down"
+no-loop
+salience 3
+when 
+jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoRS: Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos 
+    nodoIDU: Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos 
+    
+then
+    System.out.println("CALL LS DOWN");
+    nodoIDU.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	nodoIDU.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	Incident incidente= new Incident(nodoIDU.getRequest());
+    incidente.setName("LS down");
+    incidente.addRequestAsociado(nodoRS.getRequest());
+    jerarquia.addIncident(incidente);
+	update(jerarquia);
+
+
+    
+end
+
+
+rule "ls up"
+salience 3
+when 
+jerarquia: Jerarquia(status==Constants.STAT_TO_EVAL ,$listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoRS: Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    nodoIDU: Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) or
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) or
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos))  
+then
+
+    System.out.println("Se ejecuto la regla ls up");
+    nodoIDU.getRequest().getResponse().appendDescripcion( nodoRS.getRequest().getResponse().getDescripcion() );
+    nodoIDU.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    nodoIDU.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    nodoIDU.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+    RestFuse.sendToFuse(nodoIDU.getRequest());	
+    retract(nodoIDU.getRequest());
+    retract(nodoRS.getRequest());  
+    retract(jerarquia);
+end
+
+
+
+
+//afectacion red scada
+rule "red escada downn"
+no-loop
+salience 8
+when 
+    jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    nodoSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name==Constants.EVENT_NODE_DOWN,request.statusBRMS != "TO_WAIT_TO_EVENT"
+                     ) from   $listaHijos 
+    nodoSS: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos)) 
+
+then
+    System.out.println("creando incidencia red scada ");
+    
+    
+	nodoSAI.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	nodoSAI.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	Incident incidente= new Incident(nodoSAI.getRequest());
+    incidente.setName("red escada");
+    incidente.addRequestAsociado(nodoSS.getRequest());
+    jerarquia.addIncident(incidente);
+	
+    update(jerarquia);
+    
+end
+
+rule "red escada up"
+no-loop
+salience 5
+when 
+    jerarquia: Jerarquia($listaHijos:nodos )
+    nodoSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name==Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP
+                     ) from   $listaHijos 
+    nodoSS: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+
+then
+     
+    nodoSAI.getRequest().getResponse().appendDescripcion( nodoSS.getRequest().getResponse().getDescripcion() );
+    nodoSAI.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    nodoSAI.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    nodoSAI.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+    RestFuse.sendToFuse(nodoSAI.getRequest());	
+    retract(nodoSAI.getRequest());
+    retract(nodoSS.getRequest());  
+    retract(jerarquia);
+
+    
+end
+
+
+
+
+//ambos
+rule "ambos"
+no-loop
+salience 8
+when 
+    jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    nodoSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name ==Constants.EVENT_NODE_DOWN
+                     ) from   $listaHijos 
+    nodoSO: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos 
+    nodoSS: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos 
+    
+then 
+    System.out.println("Creando incidente ambos");
+    
+	nodoSAI.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	nodoSAI.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	
+	Incident incidente= new Incident(nodoSAI.getRequest());
+    incidente.setName("Ambos");
+    incidente.addRequestAsociado(nodoSO.getRequest());
+    incidente.addRequestAsociado(nodoSS.getRequest());
+    jerarquia.addIncident(incidente);
+	
+	
+    update(jerarquia);
+end
+
+
+rule "ambos up"
+salience 5
+when 
+    jerarquia: Jerarquia($listaHijos:nodos )
+    nodoSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name==Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP
+                     ) from   $listaHijos 
+    nodoSO: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    nodoSS: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN || request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+   
+then    
+
+    System.out.println("CALL LS UP1.1: "+nodoSS.getRequest().getSysId());
+    System.out.println("CALL LS UP2.1: "+nodoSAI.getRequest().getSysId());
+    nodoSAI.getRequest().getResponse().appendDescripcion( nodoSS.getRequest().getResponse().getDescripcion() );
+    nodoSAI.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    nodoSAI.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    nodoSAI.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+    RestFuse.sendToFuse(nodoSAI.getRequest());	
+    retract(nodoSAI.getRequest());
+    retract(nodoSS.getRequest());  
+    retract(nodoSO.getRequest());  
+    retract(jerarquia);
+    
+end
+
+
+
+//afectacion oficina
+rule "afectacion oficina"
+salience 3
+no-loop
+when 
+jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoSO: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN ) from   $listaHijos)) 
+then
+    System.out.println("Creando incidente afectacion oficina");
+    nodoSO.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	nodoSO.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	update(nodoSO.getRequest());
+    Incident incidente= new Incident(nodoSO.getRequest());
+    incidente.setName("Afectacion oficina");
+    jerarquia.addIncident(incidente);
+    
+    update(jerarquia);
+end
+
+
+//afectacion oficina
+rule "afectacion oficina up"
+salience 3
+when 
+jerarquia: Jerarquia($listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoSO: Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+then
+ if(nodoSO.getRequest().getSysId() != null){
+        System.out.println("CALL afectacion oficina: "+nodoSO.getRequest().getSysId());
+        nodoSO.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+        nodoSO.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+        nodoSO.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+        RestFuse.sendToFuse(nodoSO.getRequest());	
+        retract(nodoSO.getRequest());  
+        retract(jerarquia);
+    }
+end
+
+
+
+
+//Falla de conmutacion
+rule "falla de conmutacion"
+no-loop
+salience 3
+when 
+jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoSS: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos 
+    nodoRS: Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos 
+then
+    nodoRS.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	nodoRS.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	Incident incidente= new Incident(nodoRS.getRequest());
+    incidente.setName("falla de comutacion");
+    incidente.addRequestAsociado(nodoSS.getRequest());
+    jerarquia.addIncident(incidente);
+	
+	
+    update(jerarquia);
+end    
+
+
+//Falla de conmutacion
+rule "falla de conmutacion up"
+salience 3
+no-loop
+when 
+jerarquia: Jerarquia($listaHijos:nodos )
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI)) from $listaHijos ))
+    nodoSS: Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+    nodoRS: Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos 
+then
+    System.out.println("CALL LS UP1: "+nodoSS.getRequest().getSysId());
+    System.out.println("CALL LS UP2: "+nodoRS.getRequest().getSysId());
+    nodoRS.getRequest().getResponse().appendDescripcion( nodoSS.getRequest().getResponse().getDescripcion() );
+    nodoRS.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    nodoRS.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    nodoRS.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+    RestFuse.sendToFuse(nodoRS.getRequest());	
+    retract(nodoRS.getRequest());
+    retract(nodoSS.getRequest());  
+    retract(jerarquia);
+end    
+
+
+
+
+
+//SAI QUEMADA
+
+rule "SAI QUEMADA"
+salience 3
+no-loop
+when
+    jerarquia: Jerarquia(status=="TO_EVAL" ,$listaHijos:nodos )
+    requestSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name == Constants.EVENT_NODE_DOWN
+                     ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN ,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos)) or
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU),request.event.name == Constants.EVENT_NODE_DOWN,request.statusBRMS != Constants.STAT_TO_WAIT_FOR_EVENT ) from   $listaHijos))
+then
+    System.out.println("tarjeta fallando");
+    requestSAI.getRequest().getResponse().setResultado( Constants.STAT_CREATE );
+	requestSAI.getRequest().getResponse().setSeveridad( Constants.SEVERITY_3 );
+	
+	Incident incidente= new Incident(requestSAI.getRequest());
+    incidente.setName("SAI QUEMADA");
+    jerarquia.addIncident(incidente);
+	
+    update(jerarquia);
+end
+
+rule "SAI QUEMADA UP"
+no-loop
+salience 3
+when
+    jerarquia: Jerarquia($listaHijos:nodos )
+    requestSAI:Nodo(request!= null,request.device.name.contains(Constants.DISP_SAI),
+                    request.event.name ==Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP
+                     ) from   $listaHijos 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_SO), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RS), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) 
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_RP), request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos)) or
+    not(exists(Nodo(request!= null,request.device.name.contains(Constants.DISP_IDU),request.event.name == Constants.EVENT_NODE_DOWN+"+"+Constants.EVENT_NODE_UP ) from   $listaHijos))
+then
+    System.out.println("CALL SAI QUEMADA UP: "+requestSAI.getRequest().getSysId());
+    requestSAI.getRequest().setStatusBRMS( Constants.STAT_UPDATE );
+    requestSAI.getRequest().getResponse().setResultado( Constants.STAT_UPDATE );
+    requestSAI.getRequest().getResponse().setSeveridad( Constants.INCIDENT_STATUS_RESOLVED );
+    RestFuse.sendToFuse(requestSAI.getRequest());	
+    retract(requestSAI.getRequest());  
+    retract(jerarquia);
+end
+
+
+rule "DEFAULT"
+no-loop
+when
+    jerarquia: Jerarquia($listaHijos:nodos )
+then     
+    jerarquia.setStatus("TO_WAIT");
+    update(jerarquia);
+end
+
+
+
+rule "DELETE BASURA"
+no-loop
+when
+    jerarquia: Jerarquia($listaHijos:nodos)
+then
+
+//System.out.println("***Valuando jeraruiqa 1.1**************************************************************");
+//System.out.println("nodos:"+$listaHijos);
+//System.out.println("**************************************************************");
+    boolean elimina=true;
+    for(Object obj: $listaHijos){
+        if(obj != null){
+          Nodo nod=(Nodo)obj;
+          System.out.println("en eval: "+nod);
+          if(nod.getRequest()!= null && !nod.getRequest().getStatusBRMS().equals("CLOSED")){
+              elimina=false;
+          }
+        }
+    }
+    System.out.println("valor del: "+elimina);
+    if(elimina){
+     for(Object obj: $listaHijos){
+        if(obj != null){
+          Nodo nod=(Nodo)obj;
+          if(nod.getRequest()!= null){
+             retract(nod.getRequest());
+          }
+        }
+    }
+        retract(jerarquia);
+    }
+    
+    
+end
+
+
+

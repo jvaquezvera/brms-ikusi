@@ -1,0 +1,19 @@
+package mx.com.ikusi.brms.rules;
+
+import org.kie.api.runtime.KieSessionConfiguration;
+import org.kie.api.runtime.conf.TimedRuleExectionOption;
+import org.kie.api.conf.EventProcessingOption;
+
+
+/*Esta regla se ejcuta una sola ocacion en el primer llamado a las reglas,
+su funcion es establecer en la ksession la capacidad para manejar reglas 
+de tiempo*/
+
+rule "Regla para establecer configuracion de la ksession"
+no-loop 
+salience 100
+when 
+     eval(true);
+then 
+    kcontext.getKieRuntime().getSessionConfiguration().setOption( TimedRuleExectionOption.YES );
+end

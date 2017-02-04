@@ -1,0 +1,91 @@
+package mx.com.ikusi.brms.rules;
+
+//list any import classes here.
+import mx.com.ikusi.brms.utils.Constants;
+import mx.com.ikusi.brms.model.*;
+
+
+//declare any global variables here
+
+
+//------------------------------------------------------------------------
+//-------------------------GESTION DE FACTS NUEVOS------------------------
+//------------------------------------------------------------------------
+
+
+/**
+    Regla manejo facts 1
+    Esta regla verfica si el evento que ha sido enviado por el FUSE no existe en memoria
+    y lo inserta, le cambia el estatus de NEW --> SAVED
+**/
+
+rule "Insert New Event" 
+when
+   $request : Request( statusBRMS == Constants.STAT_NEW, $deviceSysId:device.sysId )
+   not ( exists(  Request(device.sysId == $deviceSysId,statusBRMS != Constants.STAT_NEW)));
+then
+    System.out.println("se ejecuto la regla: Insert New Event  ");
+    System.out.println("Se recibio el dispositivo:"+$request.getDevice().getName());
+    System.out.println("Se inserta en la memoria de trabajo");
+    
+    $request.getResponse().setDescripcion("Dispositivo: " + $request.getDevice().getName() + " - Evento: " + $request.getEvent().getName());
+    $request.setStatusBRMS(Constants.STAT_SAVED);
+    update($request);
+end
+
+//------------------------------------------------------------------------
+//-------------------------GESTION DE FACTS IN MEMORY --------------------
+//------------------------------------------------------------------------
+
+
+/**
+    Regla manejo facts 2
+    Esta regla verfica si el evento que ha sido enviado por el FUSE  existe en memoria con el mismo evento
+    de ser asi lo descarta de la memoria de trabajo
+**/
+
+rule "Device In Memory" 
+when
+    $request : Request( statusBRMS == Constants.STAT_NEW, $sysID:device.sysId, $event :event.name)
+     Request( device.sysId == $sysID,event.name == $event,statusBRMS != Constants.STAT_NEW );
+then 
+    System.out.println("the device: "+$request.getDevice().getSysId() +" is already in memory whit the same event... ");
+    System.out.println("whit event: "+$request.getEvent().getName());
+    retract($request);
+end
+
+
+/**
+    Regla manejo facts 3
+    Esta regla verfica si el evento que ha sido enviado por el FUSE  existe en memoria con un evento diferente
+    de ser asi lo inserta en la memoria de trabajo, le cambia el estatus de NEW --> DOUBLE_EVENT y concatena los eventos
+    de la siguiente manera  EVENTO_UNO+EVENTO_DOS, se elimina el fact existente y se fusiona con el nuevo fact para que solo quede
+    uno en la memoria de trabajo.
+**/
+rule "device en memoria diferente evento" 
+no-loop
+when
+    $request : Request( statusBRMS == Constants.STAT_NEW, $sysID:device.sysId, $event :event.name)
+    $requestOnMemory: Request(device.sysId == $sysID,event.name != $event, $eventOnMemory:event.name);
+then 
+    System.out.println("the device: "+$request.getDevice().getSysId() +" is already in memory whit the diferente event... ");
+    $request.setEvent($requestOnMemory.getEvent());
+    $request.getEvent().setName($eventOnMemory+"+"+$event);
+    $request.setStatusBRMS(Constants.STAT_DOUBLE_EVENT);
+    $request.setResponse($requestOnMemory.getResponse());
+    $request.getResponse().setDescripcion("Dispositivo: " + $request.getDevice().getName() + " - Evento: " + $request.getEvent().getName());
+    $request.setSysId($requestOnMemory.getSysId());
+    $requestOnMemory.getJerarquia().getNodos().remove(new Nodo($requestOnMemory.getDevice().getSysId()));
+    $request.setJerarquia($requestOnMemory.getJerarquia());
+    Nodo nodo= new Nodo($request.getDevice().getSysId(),$request.getEvent().getName(),$request);
+    $request.getJerarquia().getNodos().add(nodo);
+    
+    retract($requestOnMemory);
+    update($request);
+    update($request.getJerarquia());
+    System.out.println("se queda con evento1: "+$request.getEvent().getName());
+    
+end
+
+//TODO 
+//Gestionar eventos con jerarquia diferente 

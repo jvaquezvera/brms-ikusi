@@ -1,0 +1,156 @@
+package mx.com.ikusi.brms.rules;
+
+import mx.com.ikusi.brms.utils.*;
+import mx.com.ikusi.brms.model.*;
+import java.util.HashSet;
+
+//**************************************************************************************************
+//*******************Reglas de jerarquia************************************************************
+//**************************************************************************************************
+
+
+
+
+//En esta regla se verifica que el dispositivo  se encuentre en  alguna jerarquia como nodo dummy
+//si existe se reemplaza por el dispositivo real 
+rule "Existe el dispositivo en alguna jerarquia como dummy" //topology 1.1
+    salience 16
+when 
+    $request : Request(getStatusBRMS() == Constants.STAT_SAVED,jerarquia==null)
+    $jerarquia: Jerarquia($nodos:nodos,new Nodo($request.getDevice().getSysId())  memberOf nodos ) 
+    $nodo : Nodo(request == null) from $nodos;
+then
+    
+    $request.setJerarquia($jerarquia);
+    for(Object obj:$jerarquia.getNodos()){
+        Nodo nodo= (Nodo)obj;
+        if(nodo !=null && $nodo.equals(nodo) ){
+            nodo.setRequest($request);
+            nodo.setEventName($request.getEvent().getName());        
+        }
+    }
+    
+    update($request);
+    update($jerarquia);
+end
+
+
+
+
+rule "add to jerarquia  as child 3 no importa si es dummy"//topology 1.2
+salience 15
+ when 
+     $request : Request(getStatusBRMS() == Constants.STAT_SAVED, parents.parents != null,$padres:parents.parents)
+     $padre : Parent() from $padres
+     $jerarquia: Jerarquia(new Nodo($padre.sysId) memberOf nodos) 
+     not(exists(Jerarquia(new Nodo($request.device.sysId) memberOf nodos)))//tiene jerarquia
+
+then
+    
+    Nodo nodo= new Nodo($request.getDevice().getSysId(),$request.getEvent().getName(),$request);
+    $jerarquia.getNodos().add(nodo);
+    $request.setJerarquia($jerarquia);
+    update($jerarquia);    
+    update($request);    
+end
+
+
+
+
+rule "Create Hierarchy is Parent"//topology 1.3
+salience 10
+when 
+    $request : Request(getStatusBRMS() == Constants.STAT_SAVED, parents.parents == null)
+    not(exists( Jerarquia(new Nodo($request.getDevice().getSysId())  memberOf nodos  ) ))
+then
+    
+    Nodo nodo= new Nodo($request.getDevice().getSysId(),$request.getEvent().getName(),$request);
+    Jerarquia jerarquia= new Jerarquia();
+    jerarquia.getNodos().add(nodo);
+    jerarquia.setId($request.getDevice().getSysId());
+    jerarquia.setType($request.getEvent().getCustomer());
+    jerarquia.setStatus(Constants.STAT_NEW);
+    $request.setJerarquia(jerarquia);
+    insert(jerarquia);
+    update($request);    
+end
+
+
+//Es hijo no tiene jerarquia asignada y su padre no esta en el la jerarquia
+
+//regla inicial para buscar si alguno de sus padres tiene jeraruia case 1
+
+
+rule "add to jerarquia  as child"//1.4
+salience 10
+ when 
+     $child : Request(getStatusBRMS() == Constants.STAT_SAVED, parents.parents != null,$padres:parents.parents,jerarquia == null)
+     $padre : Parent() from $padres
+     not( exists(Request(getStatusBRMS() == Constants.STAT_SAVED,device.sysId == $padre.sysId)))
+     not( exists(Jerarquia(new Nodo($padre.sysId) memberOf nodos)))
+     
+then
+    Nodo nodo= new Nodo($child.getDevice().getSysId(),$child.getEvent().getName(),$child);
+    Nodo nodoParentDummy= new Nodo($padre.getSysId());
+    Jerarquia jerarquia= new Jerarquia();
+    jerarquia.getNodos().add(nodo);
+    jerarquia.getNodos().add(nodoParentDummy);
+    jerarquia.setId($padre.getSysId());
+    jerarquia.setType($child.getEvent().getCustomer());
+    jerarquia.setStatus(Constants.STAT_NEW);
+    $child.setJerarquia(jerarquia);
+    insert(jerarquia);
+    update($child);    
+end
+
+//... Es hijo y tiene jerarquia asignada y su padre no esta en el la jerarquia case 1
+
+rule "add to jerarquia  as child 2 no importa si es dummy"//1.5
+  salience 14
+ when 
+     $request : Request(getStatusBRMS() == Constants.STAT_SAVED, parents.parents != null,$padres:parents.parents)
+     $padre : Parent() from $padres
+     $jerarquia: Jerarquia(new Nodo($request.device.sysId) memberOf nodos,new Nodo($padre.sysId) not memberOf nodos)//tiene jerarquia
+then
+    $request.setJerarquia($jerarquia);
+    Nodo nodoParentDummy= new Nodo($padre.getSysId());
+    $request.getJerarquia().getNodos().add(nodoParentDummy);
+    update($request);    
+end
+
+ 
+
+
+
+
+rule "merge"
+when
+    $jerarquia: Jerarquia($nodos:nodos)
+    $nodo : Nodo() from $nodos
+    $jerarquia2: Jerarquia( id != $jerarquia.id,$nodo memberOf  nodos)
+then 
+    
+   
+    $jerarquia.getNodos().addAll($jerarquia2.getNodos());
+    
+    for(Object obj:$jerarquia.getNodos()){
+        Nodo nodo= (Nodo)obj;
+        if(nodo !=null && nodo.getRequest()!=null)
+        nodo.getRequest().setJerarquia($jerarquia);
+    }
+    
+    $jerarquia2.getNodos().clear();
+    
+    HashSet hs = new HashSet();
+    hs.addAll($jerarquia.getNodos());
+    $jerarquia.getNodos().clear();
+    $jerarquia.getNodos().addAll(hs);
+    $jerarquia.setIncidents($jerarquia2.getIncidents());
+    
+    
+    $jerarquia.setStatus("TO_EVAL");
+    update($jerarquia);
+    retract($jerarquia2)
+    
+end
+
